@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <script src="//cdn.jsdelivr.net/npm/phaser@3.55.2/dist/phaser.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/phaser@3.55.2/dist/phaser.min.js"></script>
 </head>
 <body style="margin: 0; padding: 0;">
 <script>
@@ -19,6 +19,7 @@ const CALCULATEDBOOKHEIGHT = BOOKHEIGHT * BOOKSCALE;
 const CALCULATEDBOOKWIDTH = BOOKWIDTH * BOOKSCALE;
 const ACCERELATION = 0.003;
 const ACCERELATIONCAP = 0.01;
+const LEADERBOARDENDPOINT = "http://localhost:5000"; // Note the absence of a trailing slash
 const owlDownwardAcc = 0.4;
 const owlFlapIncrease = 120 * owlDownwardAcc;
 const pipeWidth = CALCULATEDBOOKWIDTH;
@@ -40,7 +41,58 @@ var GAMEENDED = false;
 let curUI;
 let startUI;
 let endUI;
+let dt = 1;
+let rankingSession = "";
+let couldRank = true;
+let rankingError = "";
+let lastXHRFinished = true;
+let xhrProcessCount = 0;
+let endSubmitted = false;
+let playerNameChange = function() {
+    let name;
+    do {
+        name = prompt("Enter your name: ");
+    } while(!/^[a-zA-Z0-9!?\-_ ]+$/.test(name));
+    localStorage.setItem("playerName", name);
+    window.location.reload();
+    return name;
+};
+let playerName = localStorage.getItem("playerName") || playerNameChange();
 
+
+function ajax(action, params) {
+    if(!couldRank) return;
+    if(!lastXHRFinished) {
+        couldRank = false;
+        rankingError = "Your connection was too slow!";
+        return;
+    }
+
+    let xhr = new XMLHttpRequest();
+    xhr.open("GET", LEADERBOARDENDPOINT + "/" + action + "?" + params);
+
+    xhr.onload = function() {
+        if (xhr.status !== 200) { // analyze HTTP status of the response
+            console.log(`Unable to rank on action ${action} with params ${params}: ${xhr.status}`);
+            couldRank = false;
+            rankingError = "The server rejected your score!";
+        } else {
+            if(action === "start") {
+                rankingSession = xhr.responseText;
+            }
+            xhrProcessCount--;
+            lastXHRFinished = true;
+        }
+    };
+    xhr.onerror = function() {
+        couldRank = false;
+        rankingError = "Do you have an internet connection?";
+    }
+
+    //lastXHRFinished = false;
+    xhrProcessCount++;
+    xhr.send();
+}
 
 function registerBook(ctx, bookFileName){
     let cnt = bookChoices.length;
@@ -86,16 +138,17 @@ class Pipe {
     }
 
     update(){
-        this.x -= SCROLLSPEED;
+        this.x -= SCROLLSPEED * dt;
         if (showPipesDebug) this.debugRectangle.x = this.x;
         // Moves books to the left
         this.books.forEach(book => {
-            book.x -= SCROLLSPEED;
+            book.x -= SCROLLSPEED * dt;
         });
 
         // Check if pipe is past owl
         if (this.point && this.x < owlXPos - owlHalfWidth){
             score++;
+            ajax("ping", "session="+encodeURIComponent(rankingSession));
             this.point = false;
         }
 
@@ -149,6 +202,7 @@ class StartUI {
             strokeThickness: 5
         });
         this.startText.setOrigin(0.5, 0.5);
+        this.changeNameBtn = this.createButton(`Change name (${playerName})`, GAMEWIDTH / 2, GAMEHEIGHT / 3 + 200 * FONTSCALE, 300 * FONTSCALE, 80 * FONTSCALE, playerNameChange);
     }
 
     update(){
@@ -160,8 +214,52 @@ class StartUI {
         scoreText = this.ctx.add.text(GAMEWIDTH / 2, 20, score, textStyle);
         scoreText.setDepth(1);
         GAMESTATE = "PLAY";
+        ajax("start", "name="+encodeURIComponent(playerName));
         this.startText.destroy();
         this.titletext.destroy();
+        this.changeNameBtn.destroy();
+    }
+
+    createButton(text, x, y, width, height, callback){
+        x = x - width / 2;
+        let container = this.ctx.add.container(x, y);
+
+        let belowButton = this.ctx.add.graphics();
+        container.add(belowButton);
+        // belowButton.fillStyle(0x123456, 1);
+        // belowButton.fillRoundedRect(0, 0, width, height, 24);
+        // add white border
+        belowButton.lineStyle(1, 0xffffff, 1);
+        belowButton.strokeRoundedRect(0, 0, width, height, 24);
+
+        let button = this.ctx.add.graphics();
+        container.add(button);
+        button.fillStyle(0x5F021F, 1);
+        button.fillRoundedRect(0, 0, width, height, 24);
+        // add white border
+        button.lineStyle(1, 0xffffff, 1);
+        button.strokeRoundedRect(0, 0, width, height, 24);
+        // Add text in button
+        let btntext = this.ctx.add.text(width / 2, height / 2, text, {
+            font: 3 * FONTSCALE + "em "+ FONT,
+            fill: "#ffffff",
+            align: "center",
+            stroke: "#000000",
+            strokeThickness: 2
+        });
+        btntext.setOrigin(0.5, 0.5);
+        container.add(btntext);
+        container.setInteractive(new Phaser.Geom.Rectangle(0, 0, width, height), Phaser.Geom.Rectangle.Contains, {cursor: "pointer"});
+        container.on("pointerdown", callback);
+        container.on("pointerover", function(){
+            button.setAlpha(0);
+            document.body.style.cursor = 'pointer';
+        });
+        container.on("pointerout", function(){
+            button.setAlpha(1);
+            document.body.style.cursor = 'default';
+        });
+        return container;
     }
 }
 
@@ -175,6 +273,13 @@ class EndUI {
     create(){
         scoreText.destroy();
         this.overlay = this.ctx.add.rectangle(GAMEWIDTH / 2, GAMEHEIGHT / 2, GAMEWIDTH, GAMEHEIGHT, 0x000000);
+        this.ranktext = this.ctx.add.text(GAMEWIDTH / 2, GAMEHEIGHT / 3 - 120 * FONTSCALE, "", {
+            font: 2 * FONTSCALE + "em " + FONT,
+            fill: "#ffffff",
+            align: "center",
+            stroke: "#000000",
+            strokeThickness: 3
+        })
         this.titletext = this.ctx.add.text(GAMEWIDTH / 2, GAMEHEIGHT / 3 - 50, "Game over", {
             font: 8 * FONTSCALE + "em " + FONT,
             fill: "#ffffff",
@@ -190,6 +295,7 @@ class EndUI {
             strokeThickness: 5
         });
         this.overlay.setAlpha(this.overlayAlpha);
+        this.ranktext.setOrigin(0.5, 0.5);
         this.titletext.setOrigin(0.5, 0.5);
         this.scoretext.setOrigin(0.5, 0.5);
 
@@ -250,9 +356,11 @@ class EndUI {
 
     update(){
         if (this.overlayAlpha < 0.6){
-            this.overlayAlpha += 0.1;
+            this.overlayAlpha += 0.05 * dt;
             this.overlay.setAlpha(this.overlayAlpha);
         }
+        let rankstring = couldRank ? (endSubmitted && xhrProcessCount === 0 ? "Score submitted!" : "Waiting to submit score..") : "Could not submit score: " + rankingError;
+        this.ranktext.setText(rankstring);
     }
 
     handleKeydown(){}
@@ -305,16 +413,17 @@ function handleKeydown(){
     }
 }
 
-function update() {
+function update(time, delta) {
+    dt = delta / 16.5;
     if (!GAMEENDED){
-        bg.tilePositionX += SCROLLSPEED; // keep the background moving!
+        bg.tilePositionX += SCROLLSPEED * dt; // keep the background moving!
     }
     if (GAMESTATE === "UI"){
         curUI.update();
     } else if (GAMESTATE == "PLAY"){
-        SCROLLSPEED += Math.min(ACCERELATIONCAP, SCROLLSPEED * ACCERELATION);
-        owl.y -= owlUpwardMotion;
-        owlUpwardMotion -= Math.max(owlDownwardAcc, owlUpwardMotion * owlDownwardAcc);
+        SCROLLSPEED += Math.min(ACCERELATIONCAP, SCROLLSPEED * ACCERELATION) * dt;
+        owl.y -= owlUpwardMotion * dt;
+        owlUpwardMotion -= Math.max(owlDownwardAcc, owlUpwardMotion * owlDownwardAcc) * dt;
         scoreText.setText(score);
         owl.angle = 12 + score;
 
@@ -341,7 +450,7 @@ function owlFlap() {
 
 function managePiping(ctx) {
     if (lastPipeSpawn > 0){
-        lastPipeSpawn -= SCROLLSPEED;
+        lastPipeSpawn -= SCROLLSPEED * dt;
     } else {
         // Spawn new pipe
         lastPipeSpawn = pipeSpawnDelay;
@@ -386,9 +495,14 @@ function gameOver(){
     GAMESTATE = "UI";
     GAMEENDED = true;
     curUI = endUI;
+    setTimeout(() => {
+        ajax("end", "session="+encodeURIComponent(rankingSession));
+        endSubmitted = true;
+    }, 500);
     curUI.create();
 }
 
 </script>
 </body>
 </html>
+
