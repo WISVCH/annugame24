@@ -49,10 +49,10 @@ let lastXHRFinished = true;
 let xhrProcessCount = 0;
 let endSubmitted = false;
 let playerNameChange = function() {
-    let name;
+    let name = "Unknown";
     do {
         name = prompt("Enter your name: ");
-    } while(!/^[a-zA-Z0-9!?\-_ ]+$/.test(name));
+    } while(!name || !/^[a-zA-Z0-9!?\-_ ]+$/.test(name));
     localStorage.setItem("playerName", name);
     window.location.reload();
     return name;
